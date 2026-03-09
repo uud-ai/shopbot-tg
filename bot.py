@@ -6,7 +6,7 @@ from flask import Flask, request
 app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # Store chat histories in memory (resets on restart)
@@ -73,21 +73,27 @@ def ask_ai(chat_id, user_message):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     try:
+        # Convert messages to Gemini format
+        system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+        gemini_contents = [
+            {"role": "model" if m["role"] == "assistant" else "user",
+             "parts": [{"text": m["content"]}]}
+            for m in messages if m["role"] != "system"
+        ]
+        payload = {
+            "system_instruction": {"parts": [{"text": system_msg}]},
+            "contents": gemini_contents,
+            "generationConfig": {"maxOutputTokens": 1000}
+        }
         res = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "anthropic/claude-haiku-4-5",
-                "max_tokens": 1000,
-                "messages": messages
-            },
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
+            headers={"Content-Type": "application/json"},
+            json=payload,
             timeout=30
         )
         data = res.json()
-        reply = data["choices"][0]["message"]["content"]
+        print(f"Gemini response: {data}")
+        reply = data["candidates"][0]["content"]["parts"][0]["text"]
         chat_histories[chat_id].append({"role": "assistant", "content": reply})
         return reply
     except Exception as e:
