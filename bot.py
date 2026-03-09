@@ -86,7 +86,7 @@ def ask_ai(chat_id, user_message):
             "generationConfig": {"maxOutputTokens": 1000}
         }
         res = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}",
             headers={"Content-Type": "application/json"},
             json=payload,
             timeout=30
