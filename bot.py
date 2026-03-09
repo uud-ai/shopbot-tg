@@ -73,6 +73,8 @@ def ask_ai(chat_id, user_message):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     try:
+        print(f"DEBUG: GEMINI_KEY present: {bool(GEMINI_KEY)}, length: {len(GEMINI_KEY)}")
+        print(f"DEBUG: Sending to Gemini, messages count: {len(messages)}")
         # Convert messages to Gemini format
         system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
         gemini_contents = [
