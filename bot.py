@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 from flask import Flask, request
 
@@ -9,7 +8,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Store chat histories in memory (resets on restart)
 chat_histories = {}
 
 SYSTEM_PROMPT = """Ты личный шоппинг-ассистент ShopBot 🛍 Помогаешь людям найти товары на российских маркетплейсах.
@@ -29,17 +27,7 @@ SYSTEM_PROMPT = """Ты личный шоппинг-ассистент ShopBot �
 🔍 Найти: [Ozon](ссылка) | [Wildberries](ссылка) | [Яндекс](ссылка) | [AliExpress](ссылка)
 """
 
-def build_search_links(query):
-    enc = requests.utils.quote(query)
-    return (
-        f"[Ozon](https://www.ozon.ru/search/?text={enc}) | "
-        f"[WB](https://www.wildberries.ru/catalog/0/search.aspx?search={enc}) | "
-        f"[ЯМ](https://market.yandex.ru/search?text={enc}) | "
-        f"[Ali](https://www.aliexpress.ru/wholesale?SearchText={enc})"
-    )
-
 def send_message(chat_id, text, parse_mode="Markdown"):
-    """Send message to Telegram"""
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -48,12 +36,12 @@ def send_message(chat_id, text, parse_mode="Markdown"):
         "disable_web_page_preview": True
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, timeout=10)
+        print(f"send_message status: {r.status_code}, response: {r.text[:200]}")
     except Exception as e:
         print(f"Send error: {e}")
 
 def send_typing(chat_id):
-    """Show typing indicator"""
     try:
         requests.post(f"{TELEGRAM_API}/sendChatAction",
                       json={"chat_id": chat_id, "action": "typing"}, timeout=5)
@@ -61,15 +49,11 @@ def send_typing(chat_id):
         pass
 
 def ask_ai(chat_id, user_message):
-    """Send message to OpenRouter AI and get response"""
     if chat_id not in chat_histories:
         chat_histories[chat_id] = []
 
     chat_histories[chat_id].append({"role": "user", "content": user_message})
-
-    # Keep last 10 messages for context
     history = chat_histories[chat_id][-10:]
-
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     try:
@@ -95,7 +79,6 @@ def ask_ai(chat_id, user_message):
             return f"Ошибка API ({res.status_code}) 😔 Попробуй позже."
 
         data = res.json()
-
         if "choices" not in data or not data["choices"]:
             print(f"Unexpected response: {data}")
             return "Не получил ответ от AI 😔 Попробуй ещё раз."
@@ -111,10 +94,10 @@ def handle_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
     first_name = message.get("from", {}).get("first_name", "")
+    print(f"handle_message: chat_id={chat_id}, text={text}")
 
-    # Commands
     if text == "/start":
-        chat_histories[chat_id] = []  # Reset history
+        chat_histories[chat_id] = []
         welcome = (
             f"Привет, {first_name}! 👋\n\n"
             "Я *ShopBot* — твой личный шоппинг-ассистент 🛍\n\n"
@@ -128,16 +111,7 @@ def handle_message(message):
         return
 
     if text == "/help":
-        help_text = (
-            "🆘 *Как пользоваться ShopBot:*\n\n"
-            "Просто опиши что ищешь — я задам уточняющие вопросы "
-            "и дам конкретные рекомендации с ссылками.\n\n"
-            "*Команды:*\n"
-            "/start — начать заново\n"
-            "/clear — очистить историю\n"
-            "/help — эта справка"
-        )
-        send_message(chat_id, help_text)
+        send_message(chat_id, "🆘 *Как пользоваться ShopBot:*\n\nПросто опиши что ищешь — я задам уточняющие вопросы и дам конкретные рекомендации с ссылками.\n\n*Команды:*\n/start — начать заново\n/clear — очистить историю\n/help — эта справка")
         return
 
     if text == "/clear":
@@ -149,21 +123,27 @@ def handle_message(message):
         send_message(chat_id, "Напиши что ищешь — и я помогу найти! 🛍")
         return
 
-    # Show typing and get AI response
     send_typing(chat_id)
     reply = ask_ai(chat_id, text)
     send_message(chat_id, reply)
 
-@app.route(f"/webhook", methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    print("=== WEBHOOK HIT ===")
+    data = request.get_json(silent=True)
+    print(f"Data: {data}")
+    if not data:
+        print("ERROR: empty data")
+        return "ok", 200
     if "message" in data:
         handle_message(data["message"])
+    else:
+        print(f"No message key, got: {list(data.keys())}")
     return "ok", 200
 
 @app.route("/", methods=["GET"])
 def index():
-    return "ShopBot is running! 🛍", 200
+    return f"ShopBot is running! BOT_TOKEN set: {bool(BOT_TOKEN)}, OPENROUTER_KEY set: {bool(OPENROUTER_KEY)}", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
