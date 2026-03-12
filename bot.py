@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from flask import Flask, request
 
@@ -8,6 +9,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# Store chat histories in memory (resets on restart)
 chat_histories = {}
 
 SYSTEM_PROMPT = """Ты личный шоппинг-ассистент ShopBot 🛍 Помогаешь людям найти товары на российских маркетплейсах.
@@ -27,7 +29,17 @@ SYSTEM_PROMPT = """Ты личный шоппинг-ассистент ShopBot �
 🔍 Найти: [Ozon](ссылка) | [Wildberries](ссылка) | [Яндекс](ссылка) | [AliExpress](ссылка)
 """
 
+def build_search_links(query):
+    enc = requests.utils.quote(query)
+    return (
+        f"[Ozon](https://www.ozon.ru/search/?text={enc}) | "
+        f"[WB](https://www.wildberries.ru/catalog/0/search.aspx?search={enc}&xsubject=0) | "
+        f"[ЯМ](https://market.yandex.ru/search?text={enc}) | "
+        f"[Ali](https://aliexpress.ru/wholesale?SearchText={enc}&SortType=default)"
+    )
+
 def send_message(chat_id, text, parse_mode="Markdown"):
+    """Send message to Telegram"""
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -36,12 +48,12 @@ def send_message(chat_id, text, parse_mode="Markdown"):
         "disable_web_page_preview": True
     }
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        print(f"send_message status: {r.status_code}, response: {r.text[:200]}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Send error: {e}")
 
 def send_typing(chat_id):
+    """Show typing indicator"""
     try:
         requests.post(f"{TELEGRAM_API}/sendChatAction",
                       json={"chat_id": chat_id, "action": "typing"}, timeout=5)
@@ -49,11 +61,15 @@ def send_typing(chat_id):
         pass
 
 def ask_ai(chat_id, user_message):
+    """Send message to OpenRouter AI and get response"""
     if chat_id not in chat_histories:
         chat_histories[chat_id] = []
 
     chat_histories[chat_id].append({"role": "user", "content": user_message})
+
+    # Keep last 10 messages for context
     history = chat_histories[chat_id][-10:]
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     try:
@@ -61,43 +77,31 @@ def ask_ai(chat_id, user_message):
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://shopbot.app",
-                "X-Title": "ShopBot"
+                "Content-Type": "application/json"
             },
             json={
-                "model": "anthropic/claude-haiku-4.5",
+                "model": "anthropic/claude-haiku-4-5",
                 "max_tokens": 1000,
                 "messages": messages
             },
             timeout=30
         )
-        print(f"OpenRouter status: {res.status_code}")
-        print(f"OpenRouter response: {res.text[:500]}")
-
-        if res.status_code != 200:
-            return f"Ошибка API ({res.status_code}) 😔 Попробуй позже."
-
         data = res.json()
-        if "choices" not in data or not data["choices"]:
-            print(f"Unexpected response: {data}")
-            return "Не получил ответ от AI 😔 Попробуй ещё раз."
-
         reply = data["choices"][0]["message"]["content"]
         chat_histories[chat_id].append({"role": "assistant", "content": reply})
         return reply
     except Exception as e:
-        print(f"AI error: {type(e).__name__}: {e}")
+        print(f"AI error: {e}")
         return "Извини, произошла ошибка 😔 Попробуй ещё раз."
 
 def handle_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
     first_name = message.get("from", {}).get("first_name", "")
-    print(f"handle_message: chat_id={chat_id}, text={text}")
 
+    # Commands
     if text == "/start":
-        chat_histories[chat_id] = []
+        chat_histories[chat_id] = []  # Reset history
         welcome = (
             f"Привет, {first_name}! 👋\n\n"
             "Я *ShopBot* — твой личный шоппинг-ассистент 🛍\n\n"
@@ -111,7 +115,16 @@ def handle_message(message):
         return
 
     if text == "/help":
-        send_message(chat_id, "🆘 *Как пользоваться ShopBot:*\n\nПросто опиши что ищешь — я задам уточняющие вопросы и дам конкретные рекомендации с ссылками.\n\n*Команды:*\n/start — начать заново\n/clear — очистить историю\n/help — эта справка")
+        help_text = (
+            "🆘 *Как пользоваться ShopBot:*\n\n"
+            "Просто опиши что ищешь — я задам уточняющие вопросы "
+            "и дам конкретные рекомендации с ссылками.\n\n"
+            "*Команды:*\n"
+            "/start — начать заново\n"
+            "/clear — очистить историю\n"
+            "/help — эта справка"
+        )
+        send_message(chat_id, help_text)
         return
 
     if text == "/clear":
@@ -123,27 +136,21 @@ def handle_message(message):
         send_message(chat_id, "Напиши что ищешь — и я помогу найти! 🛍")
         return
 
+    # Show typing and get AI response
     send_typing(chat_id)
     reply = ask_ai(chat_id, text)
     send_message(chat_id, reply)
 
-@app.route("/webhook", methods=["POST"])
+@app.route(f"/webhook", methods=["POST"])
 def webhook():
-    print("=== WEBHOOK HIT ===")
-    data = request.get_json(silent=True)
-    print(f"Data: {data}")
-    if not data:
-        print("ERROR: empty data")
-        return "ok", 200
+    data = request.get_json()
     if "message" in data:
         handle_message(data["message"])
-    else:
-        print(f"No message key, got: {list(data.keys())}")
     return "ok", 200
 
 @app.route("/", methods=["GET"])
 def index():
-    return f"ShopBot is running! BOT_TOKEN set: {bool(BOT_TOKEN)}, OPENROUTER_KEY set: {bool(OPENROUTER_KEY)}", 200
+    return "ShopBot is running! 🛍", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
